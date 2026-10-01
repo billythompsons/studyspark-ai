@@ -145,10 +145,10 @@ function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 
 // ---- tutor ----
 const history = [];
-function addMsg(role, text) {
+function addMsg(role, text, isHtml) {
   const d = document.createElement("div");
   d.className = "msg " + role;
-  d.textContent = text;
+  if (isHtml) d.innerHTML = text; else d.textContent = text;
   $("chatlog").appendChild(d);
   $("chatlog").scrollTop = $("chatlog").scrollHeight;
   return d;
@@ -169,7 +169,7 @@ async function sendChat() {
   try {
     const data = await postJSON("/api/tutor", { messages: history });
     typing.classList.remove("typing");
-    typing.textContent = data.reply;
+    typing.innerHTML = md(data.reply);
     history.push({ role: "assistant", content: data.reply });
   } catch (e) {
     typing.remove();
@@ -274,9 +274,12 @@ function md(src) {
     if (t.startsWith("## ")) {
       if (inList) { html += "</ul>"; inList = false; }
       html += "<h2>" + esc(t.slice(3)) + "</h2>";
-    } else if (/^[-*] /.test(t)) {
+    } else if (t.startsWith("# ")) {
+      if (inList) { html += "</ul>"; inList = false; }
+      html += "<h2>" + esc(t.slice(2)) + "</h2>";
+    } else if (/^[-*] /.test(t) || /^\d+\.\s/.test(t)) {
       if (!inList) { html += "<ul>"; inList = true; }
-      html += "<li>" + inline(t.slice(2)) + "</li>";
+      html += "<li>" + inline(t.replace(/^\d+\.\s/, "").replace(/^[-*]\s/, "")) + "</li>";
     } else if (t === "") {
       if (inList) { html += "</ul>"; inList = false; }
     } else {

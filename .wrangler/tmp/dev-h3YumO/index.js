@@ -1,20 +1,13 @@
-/**
- * StudySpark AI — AI study copilot for students.
- * Cloudflare Worker: serves the single-page frontend + 3 AI endpoints
- * (tutor chat, quiz generator, study planner) backed by Workers AI (Qwen3).
- *
- * Hackathon entry: ML Empowerment Build Challenge 3.0 (ml-build-challenge-3.devpost.com)
- * Entrant: Jonathan Willis (solo) · zero spend · no API keys, AI binding only.
- */
+var __defProp = Object.defineProperty;
+var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
 
-const MODEL = "@cf/qwen/qwen3-30b-a3b-fp8";
-const MAX_TOKENS = 1024;
-
-// ---- tiny per-IP rate limiter (in-memory, per isolate) ----
-const hits = new Map();
+// src/index.js
+var MODEL = "@cf/qwen/qwen3-30b-a3b-fp8";
+var MAX_TOKENS = 1024;
+var hits = /* @__PURE__ */ new Map();
 function rateLimited(ip) {
   const now = Date.now();
-  const windowMs = 60 * 60 * 1000;
+  const windowMs = 60 * 60 * 1e3;
   const limit = 40;
   let rec = hits.get(ip);
   if (!rec || now - rec.start > windowMs) {
@@ -24,14 +17,14 @@ function rateLimited(ip) {
   rec.count += 1;
   return rec.count > limit;
 }
-
+__name(rateLimited, "rateLimited");
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8" },
+    headers: { "content-type": "application/json; charset=utf-8" }
   });
 }
-
+__name(json, "json");
 function extractText(res) {
   if (typeof res === "string") return res;
   if (!res || typeof res !== "object") return "";
@@ -41,41 +34,35 @@ function extractText(res) {
   if (ch && typeof ch.text === "string") return ch.text;
   return "";
 }
-
+__name(extractText, "extractText");
 async function aiChat(env, system, userMessages, opts = {}) {
   const messages = [{ role: "system", content: system }, ...userMessages];
   const res = await env.AI.run(MODEL, {
     messages,
     max_tokens: opts.maxTokens || MAX_TOKENS,
     temperature: opts.temperature ?? 0.7,
-    ...(opts.responseFormat ? { response_format: opts.responseFormat } : {}),
+    ...opts.responseFormat ? { response_format: opts.responseFormat } : {}
   });
   return extractText(res).trim();
 }
-
-// ---- API handlers ----
-
-const TUTOR_SYSTEM = `You are StudySpark, a friendly expert tutor for high school and college students.
+__name(aiChat, "aiChat");
+var TUTOR_SYSTEM = `You are StudySpark, a friendly expert tutor for high school and college students.
 Rules:
 - Explain concepts clearly and simply, using examples and analogies.
 - Break hard ideas into small steps. Ask a short check-in question at the end of each explanation.
 - If the student is stuck, give hints before revealing the answer.
 - Keep answers focused and reasonably concise (under 250 words unless the topic needs more).
 - Never do the student's graded exam or assignment for them; teach instead.`;
-
 async function handleTutor(env, body) {
-  const messages = (body.messages || [])
-    .filter((m) => m && typeof m.content === "string" && (m.role === "user" || m.role === "assistant"))
-    .slice(-20)
-    .map((m) => ({ role: m.role, content: m.content.slice(0, 4000) }));
+  const messages = (body.messages || []).filter((m) => m && typeof m.content === "string" && (m.role === "user" || m.role === "assistant")).slice(-20).map((m) => ({ role: m.role, content: m.content.slice(0, 4e3) }));
   if (!messages.length || messages[messages.length - 1].role !== "user") {
     return json({ error: "Send at least one user message." }, 400);
   }
   const reply = await aiChat(env, TUTOR_SYSTEM, messages);
   return json({ reply });
 }
-
-const QUIZ_SYSTEM = `You generate study quizzes for students. You MUST respond with ONLY a valid JSON object, no other text.
+__name(handleTutor, "handleTutor");
+var QUIZ_SYSTEM = `You generate study quizzes for students. You MUST respond with ONLY a valid JSON object, no other text.
 The JSON object has exactly this shape:
 {"questions": [{"q": "question text", "options": ["option A", "option B", "option C", "option D"], "answer": 0, "explanation": "why the answer is correct"}]}
 Rules:
@@ -84,78 +71,62 @@ Rules:
 - Explanations are 1-2 sentences.
 - Questions must test understanding, not just memorization.
 - Match the requested difficulty: easy = definitions and basics, medium = application, hard = analysis and edge cases.`;
-
 function validQuiz(obj, count) {
   if (!obj || !Array.isArray(obj.questions) || obj.questions.length === 0) return false;
   if (obj.questions.length > count + 2) return false;
   return obj.questions.every(
-    (q) =>
-      q &&
-      typeof q.q === "string" &&
-      q.q.length > 3 &&
-      Array.isArray(q.options) &&
-      q.options.length === 4 &&
-      q.options.every((o) => typeof o === "string") &&
-      Number.isInteger(q.answer) &&
-      q.answer >= 0 &&
-      q.answer <= 3 &&
-      typeof q.explanation === "string"
+    (q) => q && typeof q.q === "string" && q.q.length > 3 && Array.isArray(q.options) && q.options.length === 4 && q.options.every((o) => typeof o === "string") && Number.isInteger(q.answer) && q.answer >= 0 && q.answer <= 3 && typeof q.explanation === "string"
   );
 }
-
+__name(validQuiz, "validQuiz");
 async function handleQuiz(env, body) {
   const topic = String(body.topic || "").slice(0, 200).trim();
   const count = Math.min(Math.max(parseInt(body.count, 10) || 5, 1), 10);
   const difficulty = ["easy", "medium", "hard"].includes(body.difficulty) ? body.difficulty : "medium";
   if (!topic) return json({ error: "Topic is required." }, 400);
-
   const userMsg = `Create a ${count}-question ${difficulty} quiz about: ${topic}`;
   for (let attempt = 0; attempt < 2; attempt++) {
     const raw = await aiChat(env, QUIZ_SYSTEM, [{ role: "user", content: userMsg }], {
       maxTokens: 2048,
       temperature: 0.8,
-      responseFormat: { type: "json_object" },
+      responseFormat: { type: "json_object" }
     });
     try {
-      // strip accidental code fences
       const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
       const obj = JSON.parse(cleaned);
       if (validQuiz(obj, count)) return json({ quiz: obj.questions.slice(0, count) });
     } catch (_) {
-      /* retry */
     }
   }
   return json({ error: "Quiz generation failed. Please try again." }, 502);
 }
-
-const PLAN_SYSTEM = `You are StudySpark, an expert study coach. Create a practical day-by-day study plan.
+__name(handleQuiz, "handleQuiz");
+var PLAN_SYSTEM = `You are StudySpark, an expert study coach. Create a practical day-by-day study plan.
 Rules:
-- Output plain Markdown. Start with a one-line overview, then one section per day: "## Day N — <date or weekday>: <focus>".
+- Output plain Markdown. Start with a one-line overview, then one section per day: "## Day N \u2014 <date or weekday>: <focus>".
 - Under each day: 2-4 bullet tasks with suggested minutes, and one active-recall activity (quiz, flashcards, teach-back).
 - Order topics from foundations to advanced; schedule a review day before the exam.
 - Be realistic about daily time (assume 1-2 hours/day unless told otherwise).
 - End with 3 exam-day tips.`;
-
 async function handlePlan(env, body) {
   const subjects = String(body.subjects || "").slice(0, 800).trim();
   const examDate = String(body.examDate || "").slice(0, 40).trim();
   const hours = Math.min(Math.max(parseFloat(body.hoursPerDay) || 1.5, 0.5), 8);
   if (!subjects) return json({ error: "Subjects/topics are required." }, 400);
-  const userMsg =
-    `Create a study plan for these subjects/topics:\n${subjects}\n` +
-    (examDate ? `Exam date: ${examDate}.\n` : "") +
-    `Available study time: about ${hours} hour(s) per day.`;
+  const userMsg = `Create a study plan for these subjects/topics:
+${subjects}
+` + (examDate ? `Exam date: ${examDate}.
+` : "") + `Available study time: about ${hours} hour(s) per day.`;
   const plan = await aiChat(env, PLAN_SYSTEM, [{ role: "user", content: userMsg }], { maxTokens: 2048, temperature: 0.7 });
   return json({ plan });
 }
-
-// ---- static frontend (embedded) ----
-const INDEX_HTML = `<!DOCTYPE html>
+__name(handlePlan, "handlePlan");
+var INDEX_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>StudySpark AI — Your AI Study Copilot</title>
+<title>StudySpark AI \u2014 Your AI Study Copilot</title>
 <meta name="description" content="StudySpark AI: an AI tutor, quiz generator, and study planner for students. Built for the ML Empowerment Build Challenge 3.0.">
 <style>
   :root{
@@ -212,7 +183,7 @@ const INDEX_HTML = `<!DOCTYPE html>
 <body>
 <header>
   <div class="logo" aria-hidden="true">S</div>
-  <h1>StudySpark AI<small>Your AI study copilot — tutor, quizzes &amp; study plans. Built for the ML Empowerment Build Challenge 3.0.</small></h1>
+  <h1>StudySpark AI<small>Your AI study copilot \u2014 tutor, quizzes &amp; study plans. Built for the ML Empowerment Build Challenge 3.0.</small></h1>
 </header>
 <main>
   <nav class="tabs" role="tablist">
@@ -224,7 +195,7 @@ const INDEX_HTML = `<!DOCTYPE html>
   <section class="panel active" id="panel-tutor" role="tabpanel">
     <div class="card">
       <h2>Ask your AI tutor anything</h2>
-      <p class="sub">Stuck on photosynthesis? Confused by quadratic equations? Ask — StudySpark explains step by step and checks your understanding.</p>
+      <p class="sub">Stuck on photosynthesis? Confused by quadratic equations? Ask \u2014 StudySpark explains step by step and checks your understanding.</p>
       <div class="chatlog" id="chatlog" aria-live="polite"></div>
       <div class="composer">
         <input type="text" id="chatinput" placeholder="e.g. Explain how photosynthesis works, simply" maxlength="4000" aria-label="Your question">
@@ -237,7 +208,7 @@ const INDEX_HTML = `<!DOCTYPE html>
   <section class="panel" id="panel-quiz" role="tabpanel">
     <div class="card">
       <h2>Generate a practice quiz</h2>
-      <p class="sub">Pick any topic. StudySpark writes multiple-choice questions with answers and explanations — then grades you instantly.</p>
+      <p class="sub">Pick any topic. StudySpark writes multiple-choice questions with answers and explanations \u2014 then grades you instantly.</p>
       <label for="qtopic">Topic</label>
       <input type="text" id="qtopic" placeholder="e.g. The French Revolution, Cell biology, Python loops" maxlength="200">
       <div class="row">
@@ -269,7 +240,7 @@ const INDEX_HTML = `<!DOCTYPE html>
   </section>
 </main>
 <footer>
-  StudySpark AI · solo entry by Jonathan Willis for the <a href="https://ml-build-challenge-3.devpost.com" target="_blank" rel="noopener">ML Empowerment Build Challenge 3.0</a>.
+  StudySpark AI \xB7 solo entry by Jonathan Willis for the <a href="https://ml-build-challenge-3.devpost.com" target="_blank" rel="noopener">ML Empowerment Build Challenge 3.0</a>.
   Powered by Qwen3 on Cloudflare Workers AI. No account, no cost, no data stored.
 </footer>
 
@@ -305,7 +276,7 @@ function addMsg(role, text, isHtml) {
   $("chatlog").scrollTop = $("chatlog").scrollHeight;
   return d;
 }
-addMsg("ai", "Hi! I'm StudySpark, your AI tutor. Ask me anything you're learning — I'll explain it step by step.");
+addMsg("ai", "Hi! I'm StudySpark, your AI tutor. Ask me anything you're learning \u2014 I'll explain it step by step.");
 async function sendChat() {
   const input = $("chatinput");
   const text = input.value.trim();
@@ -316,7 +287,7 @@ async function sendChat() {
   history.push({ role: "user", content: text });
   const typing = addMsg("ai", "");
   typing.classList.add("typing");
-  typing.innerHTML = '<span class="spin"></span>Thinking…';
+  typing.innerHTML = '<span class="spin"></span>Thinking\u2026';
   $("sendbtn").disabled = true;
   try {
     const data = await postJSON("/api/tutor", { messages: history });
@@ -342,7 +313,7 @@ $("quizbtn").addEventListener("click", async () => {
   if (!topic) { $("quizerr").textContent = "Please enter a topic."; return; }
   const btn = $("quizbtn");
   btn.disabled = true;
-  btn.innerHTML = '<span class="spin"></span>Writing your quiz…';
+  btn.innerHTML = '<span class="spin"></span>Writing your quiz\u2026';
   try {
     const data = await postJSON("/api/quiz", {
       topic, difficulty: $("qdiff").value, count: parseInt($("qcount").value, 10) || 5,
@@ -392,7 +363,7 @@ function maybeScore() {
   const d = document.createElement("div");
   d.className = "card score";
   d.textContent = "You scored " + correct + " / " + quizState.questions.length +
-    (correct === quizState.questions.length ? " — perfect!" : correct >= quizState.questions.length / 2 ? " — nice work!" : " — keep practicing!");
+    (correct === quizState.questions.length ? " \u2014 perfect!" : correct >= quizState.questions.length / 2 ? " \u2014 nice work!" : " \u2014 keep practicing!");
   $("quizout").appendChild(d);
 }
 
@@ -404,7 +375,7 @@ $("planbtn").addEventListener("click", async () => {
   if (!subjects) { $("planerr").textContent = "Please list your subjects or topics."; return; }
   const btn = $("planbtn");
   btn.disabled = true;
-  btn.innerHTML = '<span class="spin"></span>Building your plan…';
+  btn.innerHTML = '<span class="spin"></span>Building your plan\u2026';
   try {
     const data = await postJSON("/api/plan", {
       subjects, examDate: $("pdate").value, hoursPerDay: parseFloat($("phours").value) || 1.5,
@@ -443,18 +414,14 @@ function md(src) {
   return html;
 }
 function inline(s) { return esc(s).replace(/\\*\\*(.+?)\\*\\*/g, "<b>$1</b>"); }
-</script>
+<\/script>
 </body>
 </html>
 `;
-
-// ---- router ----
-
-export default {
+var src_default = {
   async fetch(request, env) {
     const url = new URL(request.url);
     const ip = request.headers.get("cf-connecting-ip") || "local";
-
     if (url.pathname === "/" || url.pathname === "/index.html") {
       return new Response(INDEX_HTML, { headers: { "content-type": "text/html; charset=utf-8" } });
     }
@@ -480,5 +447,188 @@ export default {
       }
     }
     return new Response("Not found", { status: 404 });
-  },
+  }
 };
+
+// ../../../../.local/lib/node_modules/wrangler/templates/middleware/middleware-ensure-req-body-drained.ts
+var drainBody = /* @__PURE__ */ __name(async (request, env, _ctx, middlewareCtx) => {
+  try {
+    return await middlewareCtx.next(request, env);
+  } finally {
+    try {
+      if (request.body !== null && !request.bodyUsed) {
+        const reader = request.body.getReader();
+        while (!(await reader.read()).done) {
+        }
+      }
+    } catch (e) {
+      console.error("Failed to drain the unused request body.", e);
+    }
+  }
+}, "drainBody");
+var middleware_ensure_req_body_drained_default = drainBody;
+
+// ../../../../.local/lib/node_modules/wrangler/templates/middleware/middleware-miniflare3-json-error.ts
+function reduceError(e) {
+  return {
+    name: e?.name,
+    message: e?.message ?? String(e),
+    stack: e?.stack,
+    cause: e?.cause === void 0 ? void 0 : reduceError(e.cause)
+  };
+}
+__name(reduceError, "reduceError");
+var jsonError = /* @__PURE__ */ __name(async (request, env, _ctx, middlewareCtx) => {
+  try {
+    return await middlewareCtx.next(request, env);
+  } catch (e) {
+    const error = reduceError(e);
+    const body = JSON.stringify(error);
+    const headers = {
+      "Content-Type": "application/json",
+      "MF-Experimental-Error-Stack": "true"
+    };
+    const encoded = encodeURIComponent(body);
+    if (encoded.length <= 8192) {
+      headers["MF-Experimental-Error-Stack-Payload"] = encoded;
+    }
+    return new Response(body, { status: 500, headers });
+  }
+}, "jsonError");
+var middleware_miniflare3_json_error_default = jsonError;
+
+// .wrangler/tmp/bundle-zUr3vW/middleware-insertion-facade.js
+var __INTERNAL_WRANGLER_MIDDLEWARE__ = [
+  middleware_ensure_req_body_drained_default,
+  middleware_miniflare3_json_error_default
+];
+var middleware_insertion_facade_default = src_default;
+
+// ../../../../.local/lib/node_modules/wrangler/templates/middleware/common.ts
+var __facade_middleware__ = [];
+function __facade_register__(...args) {
+  __facade_middleware__.push(...args.flat());
+}
+__name(__facade_register__, "__facade_register__");
+function __facade_invokeChain__(request, env, ctx, dispatch, middlewareChain) {
+  const [head, ...tail] = middlewareChain;
+  const middlewareCtx = {
+    dispatch,
+    next(newRequest, newEnv) {
+      return __facade_invokeChain__(newRequest, newEnv, ctx, dispatch, tail);
+    }
+  };
+  return head(request, env, ctx, middlewareCtx);
+}
+__name(__facade_invokeChain__, "__facade_invokeChain__");
+function __facade_invoke__(request, env, ctx, dispatch, finalMiddleware) {
+  return __facade_invokeChain__(request, env, ctx, dispatch, [
+    ...__facade_middleware__,
+    finalMiddleware
+  ]);
+}
+__name(__facade_invoke__, "__facade_invoke__");
+
+// .wrangler/tmp/bundle-zUr3vW/middleware-loader.entry.ts
+var __Facade_ScheduledController__ = class ___Facade_ScheduledController__ {
+  constructor(scheduledTime, cron, noRetry) {
+    this.scheduledTime = scheduledTime;
+    this.cron = cron;
+    this.#noRetry = noRetry;
+  }
+  scheduledTime;
+  cron;
+  static {
+    __name(this, "__Facade_ScheduledController__");
+  }
+  #noRetry;
+  noRetry() {
+    if (!(this instanceof ___Facade_ScheduledController__)) {
+      throw new TypeError("Illegal invocation");
+    }
+    this.#noRetry();
+  }
+};
+function wrapExportedHandler(worker) {
+  if (__INTERNAL_WRANGLER_MIDDLEWARE__ === void 0 || __INTERNAL_WRANGLER_MIDDLEWARE__.length === 0) {
+    return worker;
+  }
+  for (const middleware of __INTERNAL_WRANGLER_MIDDLEWARE__) {
+    __facade_register__(middleware);
+  }
+  const fetchDispatcher = /* @__PURE__ */ __name(function(request, env, ctx) {
+    if (worker.fetch === void 0) {
+      throw new Error("Handler does not export a fetch() function.");
+    }
+    return worker.fetch(request, env, ctx);
+  }, "fetchDispatcher");
+  return {
+    ...worker,
+    fetch(request, env, ctx) {
+      const dispatcher = /* @__PURE__ */ __name(function(type, init) {
+        if (type === "scheduled" && worker.scheduled !== void 0) {
+          const controller = new __Facade_ScheduledController__(
+            Date.now(),
+            init.cron ?? "",
+            () => {
+            }
+          );
+          return worker.scheduled(controller, env, ctx);
+        }
+      }, "dispatcher");
+      return __facade_invoke__(request, env, ctx, dispatcher, fetchDispatcher);
+    }
+  };
+}
+__name(wrapExportedHandler, "wrapExportedHandler");
+function wrapWorkerEntrypoint(klass) {
+  if (__INTERNAL_WRANGLER_MIDDLEWARE__ === void 0 || __INTERNAL_WRANGLER_MIDDLEWARE__.length === 0) {
+    return klass;
+  }
+  for (const middleware of __INTERNAL_WRANGLER_MIDDLEWARE__) {
+    __facade_register__(middleware);
+  }
+  return class extends klass {
+    #fetchDispatcher = /* @__PURE__ */ __name((request, env, ctx) => {
+      this.env = env;
+      this.ctx = ctx;
+      if (super.fetch === void 0) {
+        throw new Error("Entrypoint class does not define a fetch() function.");
+      }
+      return super.fetch(request);
+    }, "#fetchDispatcher");
+    #dispatcher = /* @__PURE__ */ __name((type, init) => {
+      if (type === "scheduled" && super.scheduled !== void 0) {
+        const controller = new __Facade_ScheduledController__(
+          Date.now(),
+          init.cron ?? "",
+          () => {
+          }
+        );
+        return super.scheduled(controller);
+      }
+    }, "#dispatcher");
+    fetch(request) {
+      return __facade_invoke__(
+        request,
+        this.env,
+        this.ctx,
+        this.#dispatcher,
+        this.#fetchDispatcher
+      );
+    }
+  };
+}
+__name(wrapWorkerEntrypoint, "wrapWorkerEntrypoint");
+var WRAPPED_ENTRY;
+if (typeof middleware_insertion_facade_default === "object") {
+  WRAPPED_ENTRY = wrapExportedHandler(middleware_insertion_facade_default);
+} else if (typeof middleware_insertion_facade_default === "function") {
+  WRAPPED_ENTRY = wrapWorkerEntrypoint(middleware_insertion_facade_default);
+}
+var middleware_loader_entry_default = WRAPPED_ENTRY;
+export {
+  __INTERNAL_WRANGLER_MIDDLEWARE__,
+  middleware_loader_entry_default as default
+};
+//# sourceMappingURL=index.js.map
