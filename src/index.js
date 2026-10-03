@@ -32,25 +32,38 @@ function json(data, status = 200) {
   });
 }
 
+// Qwen3 is a hybrid reasoning model: it can leak thinking traces either as
+// <think>...</think> blocks or as plain-text reasoning. System prompts instruct
+// final-answer-only (see below); this strips the tagged form server-side
+// (added 2026-10-03 after traces were observed in live tutor/plan responses).
+function stripThinking(text) {
+  return String(text).replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+}
+
 function extractText(res) {
-  if (typeof res === "string") return res;
+  if (typeof res === "string") return stripThinking(res);
   if (!res || typeof res !== "object") return "";
-  if (typeof res.response === "string") return res.response;
+  if (typeof res.response === "string") return stripThinking(res.response);
   const ch = res.choices && res.choices[0];
-  if (ch && ch.message && typeof ch.message.content === "string") return ch.message.content;
-  if (ch && typeof ch.text === "string") return ch.text;
+  if (ch && ch.message && typeof ch.message.content === "string") return stripThinking(ch.message.content);
+  if (ch && typeof ch.text === "string") return stripThinking(ch.text);
   return "";
 }
 
 async function aiChat(env, system, userMessages, opts = {}) {
   const messages = [{ role: "system", content: system }, ...userMessages];
-  const res = await env.AI.run(MODEL, {
+  const payload = {
     messages,
     max_tokens: opts.maxTokens || MAX_TOKENS,
     temperature: opts.temperature ?? 0.7,
     ...(opts.responseFormat ? { response_format: opts.responseFormat } : {}),
-  });
-  return extractText(res).trim();
+  };
+  let text = extractText(await env.AI.run(MODEL, payload)).trim();
+  if (!text) {
+    // Transient empty model responses observed 2026-10-03 — one retry before giving up.
+    text = extractText(await env.AI.run(MODEL, payload)).trim();
+  }
+  return text;
 }
 
 // ---- API handlers ----
@@ -61,7 +74,8 @@ Rules:
 - Break hard ideas into small steps. Ask a short check-in question at the end of each explanation.
 - If the student is stuck, give hints before revealing the answer.
 - Keep answers focused and reasonably concise (under 250 words unless the topic needs more).
-- Never do the student's graded exam or assignment for them; teach instead.`;
+- Never do the student's graded exam or assignment for them; teach instead.
+- Output ONLY your final answer: never include your thinking, reasoning process, analysis, or meta-commentary (do not narrate what you are about to do).`;
 
 async function handleTutor(env, body) {
   const messages = (body.messages || [])
@@ -134,7 +148,8 @@ Rules:
 - Under each day: 2-4 bullet tasks with suggested minutes, and one active-recall activity (quiz, flashcards, teach-back).
 - Order topics from foundations to advanced; schedule a review day before the exam.
 - Be realistic about daily time (assume 1-2 hours/day unless told otherwise).
-- End with 3 exam-day tips.`;
+- End with 3 exam-day tips.
+- Output ONLY your final answer: never include your thinking, reasoning process, analysis, or meta-commentary.`;
 
 async function handlePlan(env, body) {
   const subjects = String(body.subjects || "").slice(0, 800).trim();
